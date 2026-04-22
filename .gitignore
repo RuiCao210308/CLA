@@ -151,5 +151,3 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
-LIBERO/
-OpenVLA/
