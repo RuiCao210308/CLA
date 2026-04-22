@@ -1,0 +1,15 @@
+model:
+  name: openvla/openvla-7b
+  attn_implementation: sdpa
+  trust_remote_code: true
+  low_cpu_mem_usage: true
+
+runtime:
+  hf_home: /root/autodl-tmp/cache
+  hf_endpoint: https://hf-mirror.com
+
+inference:
+  image_path: /root/openvla/test.jpg
+  #instruction: pick up the object
+  instruction: move the cup to the left
+  unnorm_key: bridge_orig
