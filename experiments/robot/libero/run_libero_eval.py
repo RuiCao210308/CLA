@@ -19,7 +19,7 @@ Usage:
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
@@ -32,6 +32,7 @@ import wandb
 
 # Append current directory so that interpreter can find experiments.robot
 sys.path.append("../..")
+from experiments.robot.action_correction import ActionCorrectionConfig, ActionCorrector
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
@@ -83,6 +84,7 @@ class GenerateConfig:
     wandb_entity: str = "YOUR_WANDB_ENTITY"          # Name of entity to log under
 
     seed: int = 7                                    # Random Seed (for reproducibility)
+    action_correction: ActionCorrectionConfig = field(default_factory=ActionCorrectionConfig)
 
     # fmt: on
 
@@ -115,6 +117,9 @@ def eval_libero(cfg: GenerateConfig) -> None:
     processor = None
     if cfg.model_family == "openvla":
         processor = get_processor(cfg)
+
+    # Optional inference-time action correction.
+    action_corrector = ActionCorrector(cfg.action_correction)
 
     # Initialize local logging
     run_id = f"EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
@@ -170,6 +175,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
             # Setup
             t = 0
             replay_images = []
+            action_corrector.reset()
+            smoothing_applied_steps = 0
+            gripper_stabilized_steps = 0
+            stagnation_detected_steps = []
             if cfg.task_suite_name == "libero_spatial":
                 max_steps = 220  # longest training demo has 193 steps
             elif cfg.task_suite_name == "libero_object":
@@ -215,6 +224,23 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         task_description,
                         processor=processor,
                     )
+                    action = action_corrector.correct(action, observation, task_description, t)
+                    correction_debug_state = action_corrector.get_debug_state()
+                    if correction_debug_state["last_applied_smoothing"]:
+                        smoothing_applied_steps += 1
+                    if correction_debug_state["last_applied_gripper_stabilization"]:
+                        gripper_stabilized_steps += 1
+                    if correction_debug_state["last_detected_stagnation"]:
+                        stagnation_detected_steps.append(t)
+                    if cfg.action_correction.enabled:
+                        log_file.write(
+                            f"Correction step={t}: smoothing_enabled={cfg.action_correction.use_smoothing}, "
+                            f"smoothing_applied={correction_debug_state['last_applied_smoothing']}, "
+                            f"gripper_stabilization_enabled={cfg.action_correction.use_gripper_stabilization}, "
+                            f"gripper_stabilized={correction_debug_state['last_applied_gripper_stabilization']}, "
+                            f"stagnation_enabled={cfg.action_correction.use_stagnation_detection}, "
+                            f"stagnation_detected={correction_debug_state['last_detected_stagnation']}\n"
+                        )
 
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
                     action = normalize_gripper_action(action, binarize=True)
@@ -245,13 +271,41 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
             )
 
+            correction_metrics = action_corrector.get_episode_metrics()
+
             # Log current results
             print(f"Success: {done}")
             print(f"# episodes completed so far: {total_episodes}")
             print(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            print(
+                "Correction debug: "
+                f"enabled={cfg.action_correction.enabled}, "
+                f"smoothing={cfg.action_correction.use_smoothing}, "
+                f"smoothing_steps={smoothing_applied_steps}, "
+                f"avg_action_delta_norm={correction_metrics['avg_action_delta_norm']:.6f}, "
+                f"gripper_stabilization={cfg.action_correction.use_gripper_stabilization}, "
+                f"gripper_stabilized_steps={gripper_stabilized_steps}, "
+                f"gripper_flip_count={int(correction_metrics['gripper_flip_count'])}, "
+                f"stagnation_detection={cfg.action_correction.use_stagnation_detection}, "
+                f"stagnation_triggers={int(correction_metrics['stagnation_trigger_count'])}, "
+                f"stagnation_steps={stagnation_detected_steps[:20]}"
+            )
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
             log_file.write(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)\n")
+            log_file.write(
+                "Correction debug: "
+                f"enabled={cfg.action_correction.enabled}, "
+                f"smoothing={cfg.action_correction.use_smoothing}, "
+                f"smoothing_steps={smoothing_applied_steps}, "
+                f"avg_action_delta_norm={correction_metrics['avg_action_delta_norm']:.6f}, "
+                f"gripper_stabilization={cfg.action_correction.use_gripper_stabilization}, "
+                f"gripper_stabilized_steps={gripper_stabilized_steps}, "
+                f"gripper_flip_count={int(correction_metrics['gripper_flip_count'])}, "
+                f"stagnation_detection={cfg.action_correction.use_stagnation_detection}, "
+                f"stagnation_triggers={int(correction_metrics['stagnation_trigger_count'])}, "
+                f"stagnation_steps={stagnation_detected_steps[:20]}\n"
+            )
             log_file.flush()
 
         # Log final results
