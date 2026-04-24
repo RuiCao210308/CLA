@@ -270,6 +270,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                         log_file.write(
                             f"Correction step={t}: smoothing_enabled={cfg.action_correction.use_smoothing}, "
                             f"smoothing_applied={correction_debug_state['last_applied_smoothing']}, "
+                            f"trigger_reasons={correction_debug_state['last_trigger_reasons']}, "
                             f"gripper_stabilization_enabled={cfg.action_correction.use_gripper_stabilization}, "
                             f"gripper_stabilized={correction_debug_state['last_applied_gripper_stabilization']}, "
                             f"stagnation_enabled={cfg.action_correction.use_stagnation_detection}, "
@@ -337,7 +338,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"held_gripper_flip_count={int(correction_metrics['held_gripper_flip_count'])}, "
                 f"stagnation_detection={cfg.action_correction.use_stagnation_detection}, "
                 f"stagnation_triggers={int(correction_metrics['stagnation_trigger_count'])}, "
-                f"stagnation_steps={stagnation_detected_steps[:20]}"
+                f"stagnation_steps={stagnation_detected_steps[:20]}, "
+                f"conditional_correction_steps={int(correction_metrics['conditional_correction_steps'])}, "
+                f"conditional_correction_ratio={correction_metrics['conditional_correction_ratio']:.6f}, "
+                f"trigger_reason_counts={correction_debug_state['trigger_reason_counts']}, "
+                f"max_consecutive_corrections_used={int(correction_metrics['max_consecutive_corrections_used'])}"
             )
             log_file.write(f"Success: {done}\n")
             log_file.write(f"# episodes completed so far: {total_episodes}\n")
@@ -354,7 +359,11 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"held_gripper_flip_count={int(correction_metrics['held_gripper_flip_count'])}, "
                 f"stagnation_detection={cfg.action_correction.use_stagnation_detection}, "
                 f"stagnation_triggers={int(correction_metrics['stagnation_trigger_count'])}, "
-                f"stagnation_steps={stagnation_detected_steps[:20]}\n"
+                f"stagnation_steps={stagnation_detected_steps[:20]}, "
+                f"conditional_correction_steps={int(correction_metrics['conditional_correction_steps'])}, "
+                f"conditional_correction_ratio={correction_metrics['conditional_correction_ratio']:.6f}, "
+                f"trigger_reason_counts={correction_debug_state['trigger_reason_counts']}, "
+                f"max_consecutive_corrections_used={int(correction_metrics['max_consecutive_corrections_used'])}\n"
             )
             log_file.flush()
 

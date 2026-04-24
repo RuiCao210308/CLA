@@ -46,6 +46,9 @@ def parse_log(path: Path) -> dict:
         "gripper_flip_count": _mean_metric(metrics, "gripper_flip_count"),
         "held_gripper_flip_count": _mean_metric(metrics, "held_gripper_flip_count"),
         "stagnation_triggers": _mean_metric(metrics, "stagnation_triggers"),
+        "conditional_correction_steps": _mean_metric(metrics, "conditional_correction_steps"),
+        "conditional_correction_ratio": _mean_metric(metrics, "conditional_correction_ratio"),
+        "max_consecutive_corrections_used": _mean_metric(metrics, "max_consecutive_corrections_used"),
     }
 
 
@@ -62,6 +65,10 @@ def _episode_rows(path, successes, metrics):
                 "gripper_flip_count": _metric_value(metric, "gripper_flip_count"),
                 "held_gripper_flip_count": _metric_value(metric, "held_gripper_flip_count"),
                 "stagnation_triggers": _metric_value(metric, "stagnation_triggers"),
+                "conditional_correction_steps": _metric_value(metric, "conditional_correction_steps"),
+                "conditional_correction_ratio": _metric_value(metric, "conditional_correction_ratio"),
+                "max_consecutive_corrections_used": _metric_value(metric, "max_consecutive_corrections_used"),
+                "trigger_reason_counts": metric.get("trigger_reason_counts", "-"),
             }
         )
     return rows
@@ -114,6 +121,9 @@ def main() -> None:
         "gripper_flip_count",
         "held_gripper_flip_count",
         "stagnation_triggers",
+        "conditional_correction_steps",
+        "conditional_correction_ratio",
+        "max_consecutive_corrections_used",
     ]
     print("\t".join(header))
     for row in rows:
@@ -127,6 +137,9 @@ def main() -> None:
                     fmt(row["gripper_flip_count"]),
                     fmt(row["held_gripper_flip_count"]),
                     fmt(row["stagnation_triggers"]),
+                    fmt(row["conditional_correction_steps"]),
+                    fmt(row["conditional_correction_ratio"]),
+                    fmt(row["max_consecutive_corrections_used"]),
                 ]
             )
         )
@@ -141,6 +154,10 @@ def print_per_episode(rows) -> None:
         "gripper_flip_count",
         "held_gripper_flip_count",
         "stagnation_triggers",
+        "conditional_correction_steps",
+        "conditional_correction_ratio",
+        "max_consecutive_corrections_used",
+        "trigger_reason_counts",
     ]
     print("\t".join(header))
     for row in rows:
@@ -155,6 +172,10 @@ def print_per_episode(rows) -> None:
                         fmt(episode_row["gripper_flip_count"]),
                         fmt(episode_row["held_gripper_flip_count"]),
                         fmt(episode_row["stagnation_triggers"]),
+                        fmt(episode_row["conditional_correction_steps"]),
+                        fmt(episode_row["conditional_correction_ratio"]),
+                        fmt(episode_row["max_consecutive_corrections_used"]),
+                        episode_row["trigger_reason_counts"],
                     ]
                 )
             )
