@@ -78,6 +78,7 @@ class GenerateConfig:
     #################################################################################################################
     run_id_note: Optional[str] = None                # Extra note to add in run ID for logging
     local_log_dir: str = "./experiments/logs"        # Local directory for eval logs
+    video_save_strategy: str = "all"                 # Options: all, none, first_success_per_task, best_per_task
 
     use_wandb: bool = False                          # Whether to also log results in Weights & Biases
     wandb_project: str = "YOUR_WANDB_PROJECT"        # Name of W&B project to log to (use default!)
@@ -87,6 +88,31 @@ class GenerateConfig:
     action_correction: ActionCorrectionConfig = field(default_factory=ActionCorrectionConfig)
 
     # fmt: on
+
+
+def _should_save_rollout_video(cfg: GenerateConfig, success: bool, saved_representative_video: bool) -> bool:
+    if cfg.video_save_strategy == "all":
+        return True
+    if cfg.video_save_strategy == "none":
+        return False
+    if cfg.video_save_strategy == "first_success_per_task":
+        return success and not saved_representative_video
+    if cfg.video_save_strategy == "best_per_task":
+        return False
+    raise ValueError(
+        "Unexpected video_save_strategy="
+        f"{cfg.video_save_strategy}; choose from all, none, first_success_per_task, best_per_task"
+    )
+
+
+def _score_rollout_video(success: bool, correction_metrics: dict) -> float:
+    """Score a rollout for representative video selection."""
+    score = 1000.0 if success else 0.0
+    score -= float(correction_metrics["avg_action_delta_norm"])
+    score -= 0.1 * float(correction_metrics["gripper_flip_count"])
+    score -= 0.5 * float(correction_metrics["held_gripper_flip_count"])
+    score -= 0.2 * float(correction_metrics["stagnation_trigger_count"])
+    return score
 
 
 @draccus.wrap()
@@ -162,6 +188,14 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
         # Start episodes
         task_episodes, task_successes = 0, 0
+        saved_representative_video = False
+        fallback_replay_images = None
+        fallback_episode_idx = None
+        fallback_success = False
+        best_video_score = None
+        best_replay_images = None
+        best_episode_idx = None
+        best_success = False
         for episode_idx in tqdm.tqdm(range(cfg.num_trials_per_task)):
             print(f"\nTask: {task_description}")
             log_file.write(f"\nTask: {task_description}\n")
@@ -266,12 +300,26 @@ def eval_libero(cfg: GenerateConfig) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            # Save a replay video of the episode
-            save_rollout_video(
-                replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
-            )
+            # Save replay video according to the configured strategy.
+            if _should_save_rollout_video(cfg, done, saved_representative_video):
+                save_rollout_video(
+                    replay_images, total_episodes, success=done, task_description=task_description, log_file=log_file
+                )
+                if cfg.video_save_strategy == "first_success_per_task" and done:
+                    saved_representative_video = True
+            elif cfg.video_save_strategy == "first_success_per_task" and fallback_replay_images is None:
+                fallback_replay_images = list(replay_images)
+                fallback_episode_idx = total_episodes
+                fallback_success = bool(done)
 
             correction_metrics = action_corrector.get_episode_metrics()
+            if cfg.video_save_strategy == "best_per_task":
+                video_score = _score_rollout_video(done, correction_metrics)
+                if best_video_score is None or video_score > best_video_score:
+                    best_video_score = video_score
+                    best_replay_images = list(replay_images)
+                    best_episode_idx = total_episodes
+                    best_success = bool(done)
 
             # Log current results
             print(f"Success: {done}")
@@ -323,6 +371,28 @@ def eval_libero(cfg: GenerateConfig) -> None:
                     f"num_episodes/{task_description}": task_episodes,
                 }
             )
+
+        if (
+            cfg.video_save_strategy == "first_success_per_task"
+            and not saved_representative_video
+            and fallback_replay_images is not None
+        ):
+            save_rollout_video(
+                fallback_replay_images,
+                fallback_episode_idx,
+                success=fallback_success,
+                task_description=task_description,
+                log_file=log_file,
+            )
+        elif cfg.video_save_strategy == "best_per_task" and best_replay_images is not None:
+            save_rollout_video(
+                best_replay_images,
+                best_episode_idx,
+                success=best_success,
+                task_description=task_description,
+                log_file=log_file,
+            )
+            log_file.write(f"Saved best-per-task rollout with score={best_video_score:.6f}\n")
 
     # Save local log file
     log_file.close()
