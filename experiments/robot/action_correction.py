@@ -1,7 +1,5 @@
 """Utilities for inference-time action correction in robot evaluation loops."""
 
-from __future__ import annotations
-
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
@@ -20,8 +18,8 @@ class ActionCorrectionConfig:
     stagnation_window: int = 5
     stagnation_threshold: float = 0.01
     retry_cooldown: int = 0
-    gripper_hold_steps: int = 3
-    gripper_flip_tolerance: int = 1
+    gripper_hold_steps: int = 1
+    gripper_flip_tolerance: int = 0
 
 
 class ActionCorrector:
@@ -34,15 +32,18 @@ class ActionCorrector:
     def reset(self) -> None:
         """Reset per-episode internal state."""
         self._prev_action: Optional[np.ndarray] = None
+        self._prev_raw_action: Optional[np.ndarray] = None
+        self._prev_raw_gripper_state: Optional[int] = None
         self._recent_action_norms = []
         self._last_retry_step = -1
         self._last_applied_smoothing = False
         self._last_applied_gripper_stabilization = False
-        self._action_delta_norm_sum = 0.0
-        self._action_delta_count = 0
+        self._raw_action_delta_norm_sum = 0.0
+        self._raw_action_delta_count = 0
         self._prev_gripper_state: Optional[int] = None
         self._last_gripper_change_step = -1
-        self._gripper_flip_count = 0
+        self._raw_gripper_flip_count = 0
+        self._held_gripper_flip_count = 0
         self._recent_gripper_flips = []
         self._prev_image: Optional[np.ndarray] = None
         self._recent_image_deltas = []
@@ -72,6 +73,8 @@ class ActionCorrector:
         if action_array.shape != (7,):
             action_array = np.asarray(action_array).reshape(-1)
 
+        self._update_raw_action_metrics(action_array)
+
         if not self.config.enabled:
             return action_array
 
@@ -79,25 +82,31 @@ class ActionCorrector:
             self._update_stagnation_state(action_array, observation, step_idx)
 
         if self.config.use_smoothing and self._prev_action is not None:
-            prev_action_delta = float(np.linalg.norm(action_array - self._prev_action))
-            self._action_delta_norm_sum += prev_action_delta
-            self._action_delta_count += 1
-
             alpha = float(self.config.smoothing_alpha)
             smoothed_action = np.array(action_array, copy=True)
             smoothed_action[:-1] = alpha * action_array[:-1] + (1.0 - alpha) * self._prev_action[:-1]
             action_array = smoothed_action
             self._last_applied_smoothing = True
-        elif self._prev_action is not None:
-            prev_action_delta = float(np.linalg.norm(action_array - self._prev_action))
-            self._action_delta_norm_sum += prev_action_delta
-            self._action_delta_count += 1
 
         if self.config.use_gripper_stabilization:
             action_array = self._stabilize_gripper(action_array, step_idx)
 
         self._prev_action = np.array(action_array, copy=True)
         return action_array
+
+    def _update_raw_action_metrics(self, action: np.ndarray) -> None:
+        """Track raw model action changes for ablation, independent of correction."""
+        if self._prev_raw_action is not None:
+            raw_action_delta = float(np.linalg.norm(action - self._prev_raw_action))
+            self._raw_action_delta_norm_sum += raw_action_delta
+            self._raw_action_delta_count += 1
+
+        raw_gripper_state = self._to_gripper_state(action[-1])
+        if self._prev_raw_gripper_state is not None and raw_gripper_state != self._prev_raw_gripper_state:
+            self._raw_gripper_flip_count += 1
+
+        self._prev_raw_action = np.array(action, copy=True)
+        self._prev_raw_gripper_state = raw_gripper_state
 
     def _update_stagnation_state(self, action: np.ndarray, observation: Dict[str, Any], step_idx: int) -> None:
         """Track simple history signals and flag likely stagnation."""
@@ -157,12 +166,12 @@ class ActionCorrector:
 
         if current_gripper_state != self._prev_gripper_state:
             steps_since_change = step_idx - self._last_gripper_change_step
-            self._gripper_flip_count += 1
             self._recent_gripper_flips.append(step_idx)
 
             if self._should_hold_gripper(steps_since_change):
                 action_array[-1] = self._prev_action[-1] if self._prev_action is not None else action_array[-1]
                 self._last_applied_gripper_stabilization = True
+                self._held_gripper_flip_count += 1
                 return action_array
 
             self._prev_gripper_state = current_gripper_state
@@ -191,13 +200,14 @@ class ActionCorrector:
     def get_episode_metrics(self) -> Dict[str, float]:
         """Return aggregate correction metrics for the current episode."""
         avg_delta = 0.0
-        if self._action_delta_count > 0:
-            avg_delta = self._action_delta_norm_sum / self._action_delta_count
+        if self._raw_action_delta_count > 0:
+            avg_delta = self._raw_action_delta_norm_sum / self._raw_action_delta_count
 
         return {
             "avg_action_delta_norm": avg_delta,
-            "num_action_delta_steps": float(self._action_delta_count),
-            "gripper_flip_count": float(self._gripper_flip_count),
+            "num_action_delta_steps": float(self._raw_action_delta_count),
+            "gripper_flip_count": float(self._raw_gripper_flip_count),
+            "held_gripper_flip_count": float(self._held_gripper_flip_count),
             "stagnation_trigger_count": float(self._stagnation_trigger_count),
         }
 
@@ -210,7 +220,8 @@ class ActionCorrector:
             "last_retry_step": self._last_retry_step,
             "last_applied_smoothing": self._last_applied_smoothing,
             "last_applied_gripper_stabilization": self._last_applied_gripper_stabilization,
-            "gripper_flip_count": self._gripper_flip_count,
+            "gripper_flip_count": self._raw_gripper_flip_count,
+            "held_gripper_flip_count": self._held_gripper_flip_count,
             "last_detected_stagnation": self._last_detected_stagnation,
             "stagnation_trigger_count": self._stagnation_trigger_count,
             "stagnation_steps": list(self._stagnation_steps[:20]),
