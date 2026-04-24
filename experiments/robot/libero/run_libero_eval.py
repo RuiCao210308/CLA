@@ -115,6 +115,10 @@ def _score_rollout_video(success: bool, correction_metrics: dict) -> float:
     return score
 
 
+def _format_trigger_reason_counts(trigger_reason_counts: dict) -> str:
+    return "|".join(f"{key}:{value}" for key, value in sorted(trigger_reason_counts.items()))
+
+
 @draccus.wrap()
 def eval_libero(cfg: GenerateConfig) -> None:
     assert cfg.pretrained_checkpoint is not None, "cfg.pretrained_checkpoint must not be None!"
@@ -341,7 +345,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"stagnation_steps={stagnation_detected_steps[:20]}, "
                 f"conditional_correction_steps={int(correction_metrics['conditional_correction_steps'])}, "
                 f"conditional_correction_ratio={correction_metrics['conditional_correction_ratio']:.6f}, "
-                f"trigger_reason_counts={correction_debug_state['trigger_reason_counts']}, "
+                f"trigger_reason_counts={_format_trigger_reason_counts(correction_debug_state['trigger_reason_counts'])}, "
                 f"max_consecutive_corrections_used={int(correction_metrics['max_consecutive_corrections_used'])}"
             )
             log_file.write(f"Success: {done}\n")
@@ -362,7 +366,7 @@ def eval_libero(cfg: GenerateConfig) -> None:
                 f"stagnation_steps={stagnation_detected_steps[:20]}, "
                 f"conditional_correction_steps={int(correction_metrics['conditional_correction_steps'])}, "
                 f"conditional_correction_ratio={correction_metrics['conditional_correction_ratio']:.6f}, "
-                f"trigger_reason_counts={correction_debug_state['trigger_reason_counts']}, "
+                f"trigger_reason_counts={_format_trigger_reason_counts(correction_debug_state['trigger_reason_counts'])}, "
                 f"max_consecutive_corrections_used={int(correction_metrics['max_consecutive_corrections_used'])}\n"
             )
             log_file.flush()

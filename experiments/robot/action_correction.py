@@ -48,10 +48,11 @@ class ActionCorrector:
         self._consecutive_corrections = 0
         self._max_consecutive_corrections_used = 0
         self._trigger_reason_counts = {
-            "action_delta": 0,
-            "low_image_change": 0,
-            "gripper_flip": 0,
-            "stagnation": 0,
+            "action_delta_trigger": 0,
+            "image_change_trigger": 0,
+            "gripper_flip_risk_trigger": 0,
+            "cooldown_blocked_trigger": 0,
+            "stagnation_trigger": 0,
         }
         self._raw_action_delta_norm_sum = 0.0
         self._raw_action_delta_count = 0
@@ -152,11 +153,13 @@ class ActionCorrector:
         if not self.config.conditional_smoothing_enabled:
             return True
 
-        if self._consecutive_corrections >= max(1, int(self.config.max_consecutive_corrections)):
-            return False
-
         trigger_reasons = self._get_trigger_reasons(action, observation, raw_action_delta, previous_raw_gripper_state)
         if not trigger_reasons:
+            return False
+
+        if self._consecutive_corrections >= max(1, int(self.config.max_consecutive_corrections)):
+            self._trigger_reason_counts["cooldown_blocked_trigger"] += 1
+            self._last_trigger_reasons = ["cooldown_blocked_trigger"] + trigger_reasons
             return False
 
         for reason in trigger_reasons:
@@ -173,7 +176,7 @@ class ActionCorrector:
     ) -> list[str]:
         reasons = []
         if raw_action_delta is not None and raw_action_delta > self.config.action_delta_trigger_threshold:
-            reasons.append("action_delta")
+            reasons.append("action_delta_trigger")
 
         current_image_delta = self._peek_image_delta(observation.get("full_image"))
         if (
@@ -182,18 +185,14 @@ class ActionCorrector:
             and current_image_delta is not None
             and current_image_delta < self.config.image_change_trigger_threshold
         ):
-            reasons.append("low_image_change")
+            reasons.append("image_change_trigger")
 
         current_gripper_state = self._to_gripper_state(action[-1])
         if previous_raw_gripper_state is not None and current_gripper_state != previous_raw_gripper_state:
-            recent_window = max(1, int(self.config.stagnation_window))
-            recent_cutoff = len(self._recent_gripper_states) - recent_window
-            recent_states = self._recent_gripper_states[max(0, recent_cutoff) :]
-            if len(set(recent_states + [current_gripper_state])) > 1:
-                reasons.append("gripper_flip")
+            reasons.append("gripper_flip_risk_trigger")
 
         if self._last_detected_stagnation:
-            reasons.append("stagnation")
+            reasons.append("stagnation_trigger")
 
         return reasons
 

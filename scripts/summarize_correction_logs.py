@@ -12,6 +12,12 @@ from statistics import mean
 
 
 METRIC_RE = re.compile(r"([A-Za-z_]+)=([^,\n]+)")
+TRIGGER_REASON_KEYS = [
+    "action_delta_trigger",
+    "image_change_trigger",
+    "gripper_flip_risk_trigger",
+    "cooldown_blocked_trigger",
+]
 
 
 def parse_bool(value: str) -> bool:
@@ -49,6 +55,7 @@ def parse_log(path: Path) -> dict:
         "conditional_correction_steps": _mean_metric(metrics, "conditional_correction_steps"),
         "conditional_correction_ratio": _mean_metric(metrics, "conditional_correction_ratio"),
         "max_consecutive_corrections_used": _mean_metric(metrics, "max_consecutive_corrections_used"),
+        **_sum_trigger_counts(metrics),
     }
 
 
@@ -56,6 +63,7 @@ def _episode_rows(path, successes, metrics):
     rows = []
     for episode_idx, success in enumerate(successes, start=1):
         metric = metrics[episode_idx - 1] if episode_idx - 1 < len(metrics) else {}
+        trigger_counts = _parse_trigger_reason_counts(metric.get("trigger_reason_counts", ""))
         rows.append(
             {
                 "run": path.stem,
@@ -69,9 +77,33 @@ def _episode_rows(path, successes, metrics):
                 "conditional_correction_ratio": _metric_value(metric, "conditional_correction_ratio"),
                 "max_consecutive_corrections_used": _metric_value(metric, "max_consecutive_corrections_used"),
                 "trigger_reason_counts": metric.get("trigger_reason_counts", "-"),
+                **trigger_counts,
             }
         )
     return rows
+
+
+def _parse_trigger_reason_counts(value):
+    counts = {key: 0 for key in TRIGGER_REASON_KEYS}
+    for item in value.split("|"):
+        if ":" not in item:
+            continue
+        key, raw_count = item.split(":", 1)
+        if key in counts:
+            try:
+                counts[key] = int(float(raw_count))
+            except ValueError:
+                counts[key] = 0
+    return counts
+
+
+def _sum_trigger_counts(metrics):
+    totals = {key: 0 for key in TRIGGER_REASON_KEYS}
+    for metric in metrics:
+        counts = _parse_trigger_reason_counts(metric.get("trigger_reason_counts", ""))
+        for key in totals:
+            totals[key] += counts[key]
+    return totals
 
 
 def _metric_value(metric, key):
@@ -124,6 +156,7 @@ def main() -> None:
         "conditional_correction_steps",
         "conditional_correction_ratio",
         "max_consecutive_corrections_used",
+        *TRIGGER_REASON_KEYS,
     ]
     print("\t".join(header))
     for row in rows:
@@ -140,6 +173,7 @@ def main() -> None:
                     fmt(row["conditional_correction_steps"]),
                     fmt(row["conditional_correction_ratio"]),
                     fmt(row["max_consecutive_corrections_used"]),
+                    *[str(row[key]) for key in TRIGGER_REASON_KEYS],
                 ]
             )
         )
@@ -157,6 +191,7 @@ def print_per_episode(rows) -> None:
         "conditional_correction_steps",
         "conditional_correction_ratio",
         "max_consecutive_corrections_used",
+        *TRIGGER_REASON_KEYS,
         "trigger_reason_counts",
     ]
     print("\t".join(header))
@@ -175,6 +210,7 @@ def print_per_episode(rows) -> None:
                         fmt(episode_row["conditional_correction_steps"]),
                         fmt(episode_row["conditional_correction_ratio"]),
                         fmt(episode_row["max_consecutive_corrections_used"]),
+                        *[str(episode_row[key]) for key in TRIGGER_REASON_KEYS],
                         episode_row["trigger_reason_counts"],
                     ]
                 )
