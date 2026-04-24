@@ -2,6 +2,7 @@
 
 Usage:
     python scripts/summarize_correction_logs.py experiments/logs/*.txt
+    python scripts/summarize_correction_logs.py --per_episode experiments/logs/*.txt
 """
 
 import argparse
@@ -37,6 +38,7 @@ def parse_log(path: Path) -> dict:
 
     return {
         "path": path,
+        "episode_rows": _episode_rows(path, successes, metrics),
         "episodes": len(successes),
         "success_rate": mean(successes) if successes else None,
         "total_success_rate": total_success_rate,
@@ -45,6 +47,33 @@ def parse_log(path: Path) -> dict:
         "held_gripper_flip_count": _mean_metric(metrics, "held_gripper_flip_count"),
         "stagnation_triggers": _mean_metric(metrics, "stagnation_triggers"),
     }
+
+
+def _episode_rows(path, successes, metrics):
+    rows = []
+    for episode_idx, success in enumerate(successes, start=1):
+        metric = metrics[episode_idx - 1] if episode_idx - 1 < len(metrics) else {}
+        rows.append(
+            {
+                "run": path.stem,
+                "episode": episode_idx,
+                "success": success,
+                "avg_action_delta_norm": _metric_value(metric, "avg_action_delta_norm"),
+                "gripper_flip_count": _metric_value(metric, "gripper_flip_count"),
+                "held_gripper_flip_count": _metric_value(metric, "held_gripper_flip_count"),
+                "stagnation_triggers": _metric_value(metric, "stagnation_triggers"),
+            }
+        )
+    return rows
+
+
+def _metric_value(metric, key):
+    if key not in metric:
+        return None
+    try:
+        return float(metric[key])
+    except ValueError:
+        return None
 
 
 def _mean_metric(metrics, key):
@@ -66,11 +95,16 @@ def fmt(value):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--per_episode", action="store_true", help="Print one row per episode instead of run averages.")
     parser.add_argument("logs", nargs="+", type=Path)
     args = parser.parse_args()
 
     rows = [parse_log(path) for path in args.logs]
     rows.sort(key=lambda row: row["path"].name)
+
+    if args.per_episode:
+        print_per_episode(rows)
+        return
 
     header = [
         "run",
@@ -96,6 +130,34 @@ def main() -> None:
                 ]
             )
         )
+
+
+def print_per_episode(rows) -> None:
+    header = [
+        "run",
+        "episode",
+        "success",
+        "avg_action_delta_norm",
+        "gripper_flip_count",
+        "held_gripper_flip_count",
+        "stagnation_triggers",
+    ]
+    print("\t".join(header))
+    for row in rows:
+        for episode_row in row["episode_rows"]:
+            print(
+                "\t".join(
+                    [
+                        episode_row["run"],
+                        str(episode_row["episode"]),
+                        str(episode_row["success"]),
+                        fmt(episode_row["avg_action_delta_norm"]),
+                        fmt(episode_row["gripper_flip_count"]),
+                        fmt(episode_row["held_gripper_flip_count"]),
+                        fmt(episode_row["stagnation_triggers"]),
+                    ]
+                )
+            )
 
 
 if __name__ == "__main__":
