@@ -15,10 +15,14 @@ class ActionCorrectionConfig:
     use_gripper_stabilization: bool = False
     use_stagnation_detection: bool = False
     conditional_smoothing_enabled: bool = False
+    fatigue_aware_enabled: bool = False
     smoothing_alpha: float = 0.5
     action_delta_trigger_threshold: float = 0.5
     image_change_trigger_threshold: float = 0.01
     max_consecutive_corrections: int = 3
+    fatigue_beta: float = 1.0
+    severity_gamma: float = 0.0
+    gripper_risk_weight: float = 1.0
     stagnation_window: int = 5
     stagnation_threshold: float = 0.01
     retry_cooldown: int = 0
@@ -44,6 +48,7 @@ class ActionCorrector:
         self._last_applied_gripper_stabilization = False
         self._last_trigger_reasons = []
         self._correction_step_count = 0
+        self._elapsed_env_steps = 0
         self._conditional_correction_steps = 0
         self._consecutive_corrections = 0
         self._max_consecutive_corrections_used = 0
@@ -52,8 +57,15 @@ class ActionCorrector:
             "image_change_trigger": 0,
             "gripper_flip_risk_trigger": 0,
             "cooldown_blocked_trigger": 0,
+            "fatigue_blocked_trigger": 0,
             "stagnation_trigger": 0,
         }
+        self._last_severity_score = 0.0
+        self._last_fatigue_score = 0.0
+        self._last_candidate_triggered = False
+        self._candidate_trigger_count = 0
+        self._candidate_severity_sum = 0.0
+        self._candidate_fatigue_sum = 0.0
         self._raw_action_delta_norm_sum = 0.0
         self._raw_action_delta_count = 0
         self._prev_gripper_state: Optional[int] = None
@@ -86,6 +98,9 @@ class ActionCorrector:
         self._last_applied_gripper_stabilization = False
         self._last_detected_stagnation = False
         self._last_trigger_reasons = []
+        self._last_severity_score = 0.0
+        self._last_fatigue_score = 0.0
+        self._last_candidate_triggered = False
 
         if action_array.shape != (7,):
             action_array = np.asarray(action_array).reshape(-1)
@@ -97,6 +112,7 @@ class ActionCorrector:
             return action_array
 
         self._correction_step_count += 1
+        self._elapsed_env_steps += 1
 
         if self.config.use_stagnation_detection:
             self._update_stagnation_state(action_array, observation, step_idx)
@@ -157,6 +173,15 @@ class ActionCorrector:
         if not trigger_reasons:
             return False
 
+        if self.config.fatigue_aware_enabled:
+            severity_score = self._compute_total_severity(trigger_reasons, raw_action_delta)
+            fatigue_score = self._compute_fatigue_score()
+            self._record_candidate_gate_scores(severity_score, fatigue_score)
+            if severity_score <= float(self.config.severity_gamma) + fatigue_score:
+                self._trigger_reason_counts["fatigue_blocked_trigger"] += 1
+                self._last_trigger_reasons = ["fatigue_blocked_trigger"] + trigger_reasons
+                return False
+
         if self._consecutive_corrections >= max(1, int(self.config.max_consecutive_corrections)):
             self._trigger_reason_counts["cooldown_blocked_trigger"] += 1
             self._last_trigger_reasons = ["cooldown_blocked_trigger"] + trigger_reasons
@@ -195,6 +220,33 @@ class ActionCorrector:
             reasons.append("stagnation_trigger")
 
         return reasons
+
+    def _compute_total_severity(self, trigger_reasons: list[str], raw_action_delta: Optional[float]) -> float:
+        """Score how strongly the original trigger exceeds the correction threshold.
+
+        FAAC does not replace the original trigger threshold. It acts as a
+        second-stage soft gate after the original conditional trigger fires.
+        """
+        threshold = max(float(self.config.action_delta_trigger_threshold), 0.0)
+        eps = 1e-6
+        action_delta_severity = 0.0
+        if raw_action_delta is not None:
+            action_delta_severity = max(0.0, raw_action_delta - threshold) / (threshold + eps)
+
+        gripper_flip_risk = 1.0 if "gripper_flip_risk_trigger" in trigger_reasons else 0.0
+        return action_delta_severity + float(self.config.gripper_risk_weight) * gripper_flip_risk
+
+    def _compute_fatigue_score(self) -> float:
+        correction_ratio = self._conditional_correction_steps / max(10, self._elapsed_env_steps)
+        return float(self.config.fatigue_beta) * correction_ratio
+
+    def _record_candidate_gate_scores(self, severity_score: float, fatigue_score: float) -> None:
+        self._last_candidate_triggered = True
+        self._last_severity_score = severity_score
+        self._last_fatigue_score = fatigue_score
+        self._candidate_trigger_count += 1
+        self._candidate_severity_sum += severity_score
+        self._candidate_fatigue_sum += fatigue_score
 
     def _update_stagnation_state(self, action: np.ndarray, observation: Dict[str, Any], step_idx: int) -> None:
         """Track simple history signals and flag likely stagnation."""
@@ -305,6 +357,13 @@ class ActionCorrector:
             "stagnation_trigger_count": float(self._stagnation_trigger_count),
             "conditional_correction_steps": float(self._conditional_correction_steps),
             "conditional_correction_ratio": self._conditional_correction_ratio(),
+            "correction_steps_used": float(self._conditional_correction_steps),
+            "correction_ratio": self._conditional_correction_ratio(),
+            "candidate_trigger_count": float(self._candidate_trigger_count),
+            "mean_severity_on_candidates": self._mean_severity_on_candidates(),
+            "mean_fatigue_on_candidates": self._mean_fatigue_on_candidates(),
+            "severity_score": self._mean_severity_on_candidates(),
+            "fatigue_score": self._mean_fatigue_on_candidates(),
             "max_consecutive_corrections_used": float(self._max_consecutive_corrections_used),
         }
 
@@ -312,6 +371,16 @@ class ActionCorrector:
         if self._correction_step_count == 0:
             return 0.0
         return self._conditional_correction_steps / self._correction_step_count
+
+    def _mean_severity_on_candidates(self) -> float:
+        if self._candidate_trigger_count == 0:
+            return 0.0
+        return self._candidate_severity_sum / self._candidate_trigger_count
+
+    def _mean_fatigue_on_candidates(self) -> float:
+        if self._candidate_trigger_count == 0:
+            return 0.0
+        return self._candidate_fatigue_sum / self._candidate_trigger_count
 
     def get_debug_state(self) -> Dict[str, Any]:
         """Expose internal state for logging/debugging."""
@@ -332,5 +401,13 @@ class ActionCorrector:
             "trigger_reason_counts": dict(self._trigger_reason_counts),
             "conditional_correction_steps": self._conditional_correction_steps,
             "conditional_correction_ratio": self._conditional_correction_ratio(),
+            "correction_steps_used": self._conditional_correction_steps,
+            "correction_ratio": self._conditional_correction_ratio(),
+            "severity_score": self._last_severity_score,
+            "fatigue_score": self._last_fatigue_score,
+            "candidate_triggered": self._last_candidate_triggered,
+            "candidate_trigger_count": self._candidate_trigger_count,
+            "mean_severity_on_candidates": self._mean_severity_on_candidates(),
+            "mean_fatigue_on_candidates": self._mean_fatigue_on_candidates(),
             "max_consecutive_corrections_used": self._max_consecutive_corrections_used,
         }
